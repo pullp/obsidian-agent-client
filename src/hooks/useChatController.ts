@@ -25,6 +25,7 @@ import { useChat } from "./useChat";
 import { usePermission } from "./usePermission";
 import { useAutoExport } from "./useAutoExport";
 import { useSessionHistory } from "./useSessionHistory";
+import { useGeminiCommands } from "./useGeminiCommands";
 
 // Domain model imports
 import type {
@@ -196,10 +197,21 @@ export function useChatController(
 
 	const mentions = useMentions(vaultAccessAdapter, plugin);
 	const autoMention = useAutoMention(vaultAccessAdapter);
-	const slashCommands = useSlashCommands(
-		session.availableCommands || [],
-		autoMention.toggle,
-	);
+
+	// Auto-detect Gemini CLI custom commands from .gemini/commands/
+	const geminiCommands = useGeminiCommands(vaultPath, session.agentId);
+
+	// Merge ACP commands with locally-detected Gemini commands
+	// ACP commands take precedence (they are the official agent commands)
+	const mergedCommands = useMemo(() => {
+		const acpCommands = session.availableCommands || [];
+		if (geminiCommands.length === 0) return acpCommands;
+		const acpNames = new Set(acpCommands.map((c) => c.name));
+		const localOnly = geminiCommands.filter((c) => !acpNames.has(c.name));
+		return [...acpCommands, ...localOnly];
+	}, [session.availableCommands, geminiCommands]);
+
+	const slashCommands = useSlashCommands(mergedCommands, autoMention.toggle);
 
 	const autoExport = useAutoExport(plugin);
 

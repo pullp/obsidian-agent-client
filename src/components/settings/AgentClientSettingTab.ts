@@ -649,6 +649,55 @@ export class AgentClientSettingTab extends PluginSettingTab {
 			);
 
 		// ─────────────────────────────────────────────────────────────────────
+		// Quick Reference
+		// ─────────────────────────────────────────────────────────────────────
+
+		new Setting(containerEl).setName("Quick Reference").setHeading();
+
+		new Setting(containerEl)
+			.setName("Use absolute path")
+			.setDesc(
+				"Use the absolute file path instead of vault-relative path in references.",
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(
+						this.plugin.settings.quickReference.useAbsolutePath,
+					)
+					.onChange(async (value) => {
+						this.plugin.settings.quickReference.useAbsolutePath =
+							value;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Prefix")
+			.setDesc("Text to prepend before the reference string.")
+			.addText((text) =>
+				text
+					.setPlaceholder("")
+					.setValue(this.plugin.settings.quickReference.prefix)
+					.onChange(async (value) => {
+						this.plugin.settings.quickReference.prefix = value;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Suffix")
+			.setDesc("Text to append after the reference string.")
+			.addText((text) =>
+				text
+					.setPlaceholder("")
+					.setValue(this.plugin.settings.quickReference.suffix)
+					.onChange(async (value) => {
+						this.plugin.settings.quickReference.suffix = value;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		// ─────────────────────────────────────────────────────────────────────
 		// Developer
 		// ─────────────────────────────────────────────────────────────────────
 

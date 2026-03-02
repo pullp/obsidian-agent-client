@@ -4,7 +4,10 @@ import {
 	WorkspaceSplit,
 	Notice,
 	requestUrl,
+	MarkdownView,
+	FileSystemAdapter,
 } from "obsidian";
+import type { Editor } from "obsidian";
 import type { Root } from "react-dom/client";
 import * as semver from "semver";
 import { ChatView, VIEW_TYPE_CHAT } from "./components/chat/ChatView";
@@ -102,6 +105,12 @@ export interface AgentClientPluginSettings {
 	savedSessions: SavedSessionInfo[];
 	// Last used model per agent (agentId → modelId)
 	lastUsedModels: Record<string, string>;
+	// Quick Reference settings
+	quickReference: {
+		useAbsolutePath: boolean;
+		prefix: string;
+		suffix: string;
+	};
 	// Floating chat button settings
 	showFloatingButton: boolean;
 	floatingButtonImage: string;
@@ -166,6 +175,11 @@ const DEFAULT_SETTINGS: AgentClientPluginSettings = {
 	},
 	savedSessions: [],
 	lastUsedModels: {},
+	quickReference: {
+		useAbsolutePath: false,
+		prefix: "",
+		suffix: "",
+	},
 	showFloatingButton: false,
 	floatingButtonImage: "",
 	floatingWindowSize: { width: 400, height: 500 },
@@ -249,6 +263,43 @@ export default class AgentClientPlugin extends Plugin {
 		this.registerAgentCommands();
 		this.registerPermissionCommands();
 		this.registerBroadcastCommands();
+
+		// Quick Reference: copy file path + line number to clipboard
+		this.addCommand({
+			id: "copy-reference",
+			name: "Copy reference",
+			editorCallback: (editor: Editor, view: MarkdownView) => {
+				const file = view.file;
+				if (!file) {
+					new Notice("No active file");
+					return;
+				}
+
+				const from = editor.getCursor("from");
+				const to = editor.getCursor("to");
+				const startLine = from.line + 1;
+				const endLine = to.line + 1;
+
+				let filePath = file.path;
+				if (this.settings.quickReference.useAbsolutePath) {
+					const adapter = this.app.vault.adapter;
+					if (adapter instanceof FileSystemAdapter) {
+						filePath = adapter.getFullPath(file.path);
+					}
+				}
+
+				let reference =
+					startLine === endLine
+						? `${filePath}#L${startLine}`
+						: `${filePath}#L${startLine}-${endLine}`;
+
+				reference = `${this.settings.quickReference.prefix}${reference}${this.settings.quickReference.suffix}`;
+
+				navigator.clipboard.writeText(reference).then(() => {
+					new Notice(`Copied: ${reference}`, 3000);
+				});
+			},
+		});
 
 		// Floating chat window commands
 		this.addCommand({
@@ -1110,6 +1161,30 @@ export default class AgentClientPlugin extends Plugin {
 					return result;
 				}
 				return DEFAULT_SETTINGS.lastUsedModels;
+			})(),
+			quickReference: (() => {
+				const rawQr = rawSettings.quickReference as
+					| Record<string, unknown>
+					| null
+					| undefined;
+				if (rawQr && typeof rawQr === "object") {
+					return {
+						useAbsolutePath:
+							typeof rawQr.useAbsolutePath === "boolean"
+								? rawQr.useAbsolutePath
+								: DEFAULT_SETTINGS.quickReference
+										.useAbsolutePath,
+						prefix:
+							typeof rawQr.prefix === "string"
+								? rawQr.prefix
+								: DEFAULT_SETTINGS.quickReference.prefix,
+						suffix:
+							typeof rawQr.suffix === "string"
+								? rawQr.suffix
+								: DEFAULT_SETTINGS.quickReference.suffix,
+					};
+				}
+				return DEFAULT_SETTINGS.quickReference;
 			})(),
 			showFloatingButton:
 				typeof rawSettings.showFloatingButton === "boolean"
