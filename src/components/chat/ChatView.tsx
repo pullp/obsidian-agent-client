@@ -520,6 +520,57 @@ function ChatComponent({
 		viewId,
 	]);
 
+	// Handle "Add selection to chat" command (Cmd+L)
+	useEffect(() => {
+		const workspace = plugin.app.workspace;
+
+		const eventRef = (
+			workspace as unknown as {
+				on: (
+					name: string,
+					callback: (text: string) => void,
+				) => ReturnType<typeof workspace.on>;
+			}
+		).on("agent-client:add-selection-to-chat", (text: string) => {
+			// Only respond if this view is the last active one
+			if (
+				plugin.lastActiveChatViewId &&
+				plugin.lastActiveChatViewId !== viewId
+			) {
+				return;
+			}
+
+			// Append to existing input (don't replace)
+			const currentText = inputValue;
+			const newText = currentText ? `${currentText}\n${text}` : text;
+			setInputValue(newText);
+
+			// Focus the textarea after a short delay (wait for view activation)
+			window.setTimeout(() => {
+				const textarea = view.containerEl.querySelector(
+					"textarea.agent-client-chat-input-textarea",
+				);
+				if (textarea instanceof HTMLTextAreaElement) {
+					textarea.focus();
+					// Move cursor to end
+					textarea.selectionStart = textarea.value.length;
+					textarea.selectionEnd = textarea.value.length;
+				}
+			}, 100);
+		});
+
+		return () => {
+			workspace.offref(eventRef);
+		};
+	}, [
+		plugin.app.workspace,
+		plugin.lastActiveChatViewId,
+		viewId,
+		inputValue,
+		setInputValue,
+		view.containerEl,
+	]);
+
 	// ============================================================
 	// Render
 	// ============================================================

@@ -301,6 +301,49 @@ export default class AgentClientPlugin extends Plugin {
 			},
 		});
 
+		// Add selection to chat: send selected text as reference to agent chat input
+		this.addCommand({
+			id: "add-selection-to-chat",
+			name: "Add selection to chat",
+			hotkeys: [{ modifiers: ["Mod"], key: "l" }],
+			editorCallback: (editor: Editor, view: MarkdownView) => {
+				const file = view.file;
+				if (!file) {
+					new Notice("No active file");
+					return;
+				}
+
+				const from = editor.getCursor("from");
+				const to = editor.getCursor("to");
+				const startLine = from.line + 1;
+				const endLine = to.line + 1;
+
+				let filePath = file.path;
+				if (this.settings.quickReference.useAbsolutePath) {
+					const adapter = this.app.vault.adapter;
+					if (adapter instanceof FileSystemAdapter) {
+						filePath = adapter.getFullPath(file.path);
+					}
+				}
+
+				const lineRef =
+					startLine === endLine
+						? `${filePath}#L${startLine}`
+						: `${filePath}#L${startLine}-${endLine}`;
+
+				const referenceText = `${lineRef}\n`;
+
+				// Fire event to inject into chat input
+				this.app.workspace.trigger(
+					"agent-client:add-selection-to-chat" as "quit",
+					referenceText,
+				);
+
+				// Activate chat view and focus textarea
+				void this.activateView();
+			},
+		});
+
 		// Floating chat window commands
 		this.addCommand({
 			id: "open-floating-chat",
