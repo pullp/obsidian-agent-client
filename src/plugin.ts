@@ -111,6 +111,8 @@ export interface AgentClientPluginSettings {
 		prefix: string;
 		suffix: string;
 	};
+	// Last used mode per agent (agentId → modeId)
+	lastUsedModes: Record<string, string>;
 	// Floating chat button settings
 	showFloatingButton: boolean;
 	floatingButtonImage: string;
@@ -180,6 +182,7 @@ const DEFAULT_SETTINGS: AgentClientPluginSettings = {
 		prefix: "",
 		suffix: "",
 	},
+	lastUsedModes: {},
 	showFloatingButton: false,
 	floatingButtonImage: "",
 	floatingWindowSize: { width: 400, height: 500 },
@@ -883,6 +886,17 @@ export default class AgentClientPlugin extends Plugin {
 				);
 			},
 		});
+
+		this.addCommand({
+			id: "export-chat",
+			name: "Export chat",
+			callback: () => {
+				this.app.workspace.trigger(
+					"agent-client:export-chat" as "quit",
+					this.lastActiveChatViewId,
+				);
+			},
+		});
 	}
 
 	/**
@@ -932,7 +946,7 @@ export default class AgentClientPlugin extends Plugin {
 		);
 		if (
 			!inputState ||
-			(inputState.text.trim() === "" && inputState.images.length === 0)
+			(inputState.text.trim() === "" && inputState.files.length === 0)
 		) {
 			new Notice("[Agent Client] No prompt to broadcast");
 			return;
@@ -1290,6 +1304,26 @@ export default class AgentClientPlugin extends Plugin {
 					};
 				}
 				return DEFAULT_SETTINGS.quickReference;
+			})(),
+			lastUsedModes: (() => {
+				const raw = rawSettings.lastUsedModes;
+				if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+					const result: Record<string, string> = {};
+					for (const [key, value] of Object.entries(
+						raw as Record<string, unknown>,
+					)) {
+						if (
+							typeof key === "string" &&
+							key.length > 0 &&
+							typeof value === "string" &&
+							value.length > 0
+						) {
+							result[key] = value;
+						}
+					}
+					return result;
+				}
+				return DEFAULT_SETTINGS.lastUsedModes;
 			})(),
 			showFloatingButton:
 				typeof rawSettings.showFloatingButton === "boolean"

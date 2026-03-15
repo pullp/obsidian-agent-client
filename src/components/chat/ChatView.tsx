@@ -28,9 +28,6 @@ import { useSessionTabs } from "../../hooks/useSessionTabs";
 // Component imports (tabs)
 import { ChatTabBar } from "./ChatTabBar";
 
-// Domain model imports
-import type { ImagePromptContent } from "../../domain/models/prompt-content";
-
 // Type definitions for Obsidian internal APIs
 interface AppWithSettings {
 	setting: {
@@ -96,19 +93,22 @@ function ChatTabContent({
 		activeAgentLabel,
 		availableAgents,
 		errorInfo,
+		agentUpdateNotification,
 		handleSendMessage,
 		handleStopGeneration,
 		handleNewChat,
 		handleExportChat,
 		handleRestartAgent,
 		handleClearError,
+		handleClearAgentUpdate,
 		handleOpenHistory,
 		handleSetMode,
 		handleSetModel,
+		handleSetConfigOption,
 		inputValue,
 		setInputValue,
-		attachedImages,
-		setAttachedImages,
+		attachedFiles,
+		setAttachedFiles,
 		restoredMessage,
 		handleRestoredMessageConsumed,
 	} = controller;
@@ -243,22 +243,23 @@ function ChatTabContent({
 	const getInputState = useCallback((): ChatInputState | null => {
 		return {
 			text: inputValue,
-			images: attachedImages,
+			files: attachedFiles,
 		};
-	}, [inputValue, attachedImages]);
+	}, [inputValue, attachedFiles]);
 
 	/** Set input state from broadcast commands */
 	const setInputState = useCallback(
 		(state: ChatInputState) => {
 			setInputValue(state.text);
-			setAttachedImages(state.images);
+			setAttachedFiles(state.files);
 		},
-		[setInputValue, setAttachedImages],
+		[setInputValue, setAttachedFiles],
 	);
 
 	/** Send message for broadcast commands (returns true if sent) */
 	const sendMessageForBroadcast = useCallback(async (): Promise<boolean> => {
-		if (!inputValue.trim() && attachedImages.length === 0) {
+		// Allow sending if there's text OR attachments
+		if (!inputValue.trim() && attachedFiles.length === 0) {
 			return false;
 		}
 		if (!isSessionReady || sessionHistory.loading) {
@@ -268,38 +269,29 @@ function ChatTabContent({
 			return false;
 		}
 
-		const imagesToSend: ImagePromptContent[] = attachedImages.map(
-			(img) => ({
-				type: "image",
-				data: img.data,
-				mimeType: img.mimeType,
-			}),
-		);
-
+		// Clear input before sending
 		const messageToSend = inputValue.trim();
+		const filesToSend =
+			attachedFiles.length > 0 ? [...attachedFiles] : undefined;
 		setInputValue("");
-		setAttachedImages([]);
+		setAttachedFiles([]);
 
-		await handleSendMessage(
-			messageToSend,
-			imagesToSend.length > 0 ? imagesToSend : undefined,
-		);
+		await handleSendMessage(messageToSend, filesToSend);
 		return true;
 	}, [
 		inputValue,
-		attachedImages,
+		attachedFiles,
 		isSessionReady,
 		sessionHistory.loading,
 		isSending,
 		handleSendMessage,
 		setInputValue,
-		setAttachedImages,
+		setAttachedFiles,
 	]);
 
 	/** Check if this view can send a message */
 	const canSendForBroadcast = useCallback((): boolean => {
-		const hasContent =
-			inputValue.trim() !== "" || attachedImages.length > 0;
+		const hasContent = inputValue.trim() !== "" || attachedFiles.length > 0;
 		return (
 			hasContent &&
 			isSessionReady &&
@@ -308,7 +300,7 @@ function ChatTabContent({
 		);
 	}, [
 		inputValue,
-		attachedImages,
+		attachedFiles,
 		isSessionReady,
 		sessionHistory.loading,
 		isSending,
@@ -477,16 +469,33 @@ function ChatTabContent({
 			void handleStopGeneration();
 		});
 
+		const exportRef = (
+			workspace as unknown as {
+				on: (
+					name: string,
+					callback: CustomEventCallback,
+				) => ReturnType<typeof workspace.on>;
+			}
+		).on("agent-client:export-chat", (targetViewId?: string) => {
+			// Only respond if this view is the target (or no target specified)
+			if (targetViewId && targetViewId !== viewId) {
+				return;
+			}
+			void handleExportChat();
+		});
+
 		return () => {
 			workspace.offref(approveRef);
 			workspace.offref(rejectRef);
 			workspace.offref(cancelRef);
+			workspace.offref(exportRef);
 		};
 	}, [
 		plugin.app.workspace,
 		permission.approveActivePermission,
 		permission.rejectActivePermission,
 		handleStopGeneration,
+		handleExportChat,
 		viewId,
 		isActive,
 	]);
@@ -590,16 +599,24 @@ function ChatTabContent({
 				onModeChange={(modeId) => void handleSetMode(modeId)}
 				models={session.models}
 				onModelChange={(modelId) => void handleSetModel(modelId)}
+				configOptions={session.configOptions}
+				onConfigOptionChange={(configId, value) =>
+					void handleSetConfigOption(configId, value)
+				}
+				usage={session.usage}
 				supportsImages={session.promptCapabilities?.image ?? false}
 				agentId={session.agentId}
 				// Controlled component props (for broadcast commands)
 				inputValue={inputValue}
 				onInputChange={setInputValue}
-				attachedImages={attachedImages}
-				onAttachedImagesChange={setAttachedImages}
+				attachedFiles={attachedFiles}
+				onAttachedFilesChange={setAttachedFiles}
 				// Error overlay props
 				errorInfo={errorInfo}
 				onClearError={handleClearError}
+				// Agent update notification props
+				agentUpdateNotification={agentUpdateNotification}
+				onClearAgentUpdate={handleClearAgentUpdate}
 				messages={messages}
 			/>
 		</>
