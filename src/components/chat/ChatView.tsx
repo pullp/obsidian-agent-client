@@ -22,6 +22,11 @@ import type { IAcpClient } from "../../adapters/acp/acp.adapter";
 
 // Hooks imports
 import { useChatController } from "../../hooks/useChatController";
+import { useSettings } from "../../hooks/useSettings";
+import { useSessionTabs } from "../../hooks/useSessionTabs";
+
+// Component imports (tabs)
+import { ChatTabBar } from "./ChatTabBar";
 
 // Domain model imports
 import type { ImagePromptContent } from "../../domain/models/prompt-content";
@@ -36,41 +41,46 @@ interface AppWithSettings {
 
 export const VIEW_TYPE_CHAT = "agent-client-chat-view";
 
-function ChatComponent({
+// ============================================================================
+// ChatTabContent - Per-tab chat session (extracted from original ChatComponent)
+// ============================================================================
+
+/**
+ * Content component for a single tab within ChatView.
+ * Each instance owns its own useChatController → independent agent process.
+ */
+function ChatTabContent({
 	plugin,
 	view,
 	viewId,
+	tabViewId,
+	isActive,
+	initialAgentId,
+	onAgentChange,
+	onFirstMessage,
 }: {
 	plugin: AgentClientPlugin;
 	view: ChatView;
 	viewId: string;
+	tabViewId: string;
+	isActive: boolean;
+	/** Initial agent ID from workspace state restoration */
+	initialAgentId?: string;
+	/** Called when agent switches in this tab (for tab title update) */
+	onAgentChange: (agentLabel: string, agentId: string) => void;
+	/** Called when first message is sent (for tab title update) */
+	onFirstMessage: (messagePreview: string) => void;
 }) {
-	// ============================================================
-	// Platform Check
-	// ============================================================
-	if (!Platform.isDesktopApp) {
-		throw new Error("Agent Client is only available on desktop");
-	}
-
-	// ============================================================
-	// Agent ID State (synced with Obsidian view state)
-	// Must be defined before useChatController to pass as initialAgentId
-	// ============================================================
-	const [restoredAgentId, setRestoredAgentId] = useState<string | undefined>(
-		view.getInitialAgentId() ?? undefined,
-	);
-
 	// ============================================================
 	// Chat Controller Hook (Centralized Logic)
 	// ============================================================
 	const controller = useChatController({
 		plugin,
-		viewId,
-		initialAgentId: restoredAgentId,
+		viewId: tabViewId,
+		initialAgentId,
 	});
 
 	const {
-		logger,
 		acpAdapter,
 		settings,
 		session,
@@ -104,59 +114,50 @@ function ChatComponent({
 	} = controller;
 
 	// ============================================================
-	// Agent ID Restoration (ChatView-specific)
-	// Subscribe to agentId restoration from Obsidian's setState
-	// Note: logger is now available from controller
-	// ============================================================
-	useEffect(() => {
-		const unsubscribe = view.onAgentIdRestored((agentId) => {
-			logger.log(
-				`[ChatView] Agent ID restored from workspace: ${agentId}`,
-			);
-			setRestoredAgentId(agentId);
-		});
-		return unsubscribe;
-	}, [view, logger]);
-
-	// ============================================================
-	// Focus Tracking (ChatView-specific)
-	// ============================================================
-	useEffect(() => {
-		const handleFocus = () => {
-			plugin.setLastActiveChatViewId(viewId);
-		};
-
-		const container = view.containerEl;
-		container.addEventListener("focus", handleFocus, true);
-		container.addEventListener("click", handleFocus);
-
-		// Set as active on mount (first opened view becomes active)
-		plugin.setLastActiveChatViewId(viewId);
-
-		return () => {
-			container.removeEventListener("focus", handleFocus, true);
-			container.removeEventListener("click", handleFocus);
-		};
-	}, [plugin, viewId, view.containerEl]);
-
-	// ============================================================
 	// Refs
 	// ============================================================
 	const acpClientRef = useRef<IAcpClient>(acpAdapter);
-	/** Track if initial agent restoration has been performed (prevent re-triggering) */
-	const hasRestoredAgentRef = useRef(false);
+
+	// ============================================================
+	// Notify parent when agent label changes
+	// ============================================================
+	useEffect(() => {
+		onAgentChange(activeAgentLabel, session.agentId);
+	}, [activeAgentLabel, session.agentId, onAgentChange]);
+
+	// ============================================================
+	// Notify parent on first user message (for tab title)
+	// ============================================================
+	const hasNotifiedFirstMessage = useRef(false);
+
+	useEffect(() => {
+		if (hasNotifiedFirstMessage.current) return;
+		if (messages.length === 0) return;
+
+		// Find the first user message
+		const firstUserMsg = messages.find((m) => m.role === "user");
+		if (!firstUserMsg) return;
+
+		// Extract text from content (supports both "text" and "text_with_context")
+		const textContent = firstUserMsg.content.find(
+			(c) => c.type === "text" || c.type === "text_with_context",
+		);
+		if (
+			textContent &&
+			(textContent.type === "text" ||
+				textContent.type === "text_with_context")
+		) {
+			hasNotifiedFirstMessage.current = true;
+			onFirstMessage(textContent.text);
+		}
+	}, [messages, onFirstMessage]);
 
 	// ============================================================
 	// ChatView-specific Callbacks
 	// ============================================================
-
-	// ChatView-specific handleNewChat wrapper (also persists agent ID via view.setAgentId)
-	// If requestedAgentId is provided, use it; otherwise keep the current agent
 	const handleNewChatWithPersist = useCallback(
 		async (requestedAgentId?: string) => {
 			await handleNewChat(requestedAgentId);
-			// Persist agent ID for this view (survives Obsidian restart)
-			// Use requestedAgentId if provided; otherwise current session.agentId (effectively no-op)
 			if (requestedAgentId) {
 				view.setAgentId(requestedAgentId);
 			}
@@ -236,36 +237,7 @@ function ChatComponent({
 	);
 
 	// ============================================================
-	// Agent ID Restoration Effect (ChatView-specific)
-	// ============================================================
-	// Re-create session when agentId is restored from workspace state
-	// This handles the case where setState() is called after onOpen()
-	// Only runs ONCE for initial restoration (prevents re-triggering on agent switch)
-	useEffect(() => {
-		if (hasRestoredAgentRef.current) return;
-		if (!restoredAgentId) return;
-		if (session.state === "initializing") return;
-
-		hasRestoredAgentRef.current = true;
-
-		if (session.agentId === restoredAgentId) return;
-
-		logger.log(
-			`[ChatView] Switching to restored agent: ${restoredAgentId} (current: ${session.agentId})`,
-		);
-		// Note: useChatController handles session creation, but we need to restart
-		// with the correct agent if it differs
-		void handleNewChat(restoredAgentId);
-	}, [
-		restoredAgentId,
-		session.state,
-		session.agentId,
-		logger,
-		handleNewChat,
-	]);
-
-	// ============================================================
-	// Broadcast Command Callbacks
+	// Broadcast Command Callbacks (only active tab responds)
 	// ============================================================
 	/** Get current input state for broadcast commands */
 	const getInputState = useCallback((): ChatInputState | null => {
@@ -286,7 +258,6 @@ function ChatComponent({
 
 	/** Send message for broadcast commands (returns true if sent) */
 	const sendMessageForBroadcast = useCallback(async (): Promise<boolean> => {
-		// Allow sending if there's text OR images
 		if (!inputValue.trim() && attachedImages.length === 0) {
 			return false;
 		}
@@ -297,7 +268,6 @@ function ChatComponent({
 			return false;
 		}
 
-		// Convert attached images to ImagePromptContent format
 		const imagesToSend: ImagePromptContent[] = attachedImages.map(
 			(img) => ({
 				type: "image",
@@ -306,7 +276,6 @@ function ChatComponent({
 			}),
 		);
 
-		// Clear input before sending
 		const messageToSend = inputValue.trim();
 		setInputValue("");
 		setAttachedImages([]);
@@ -352,8 +321,10 @@ function ChatComponent({
 		}
 	}, [isSending, handleStopGeneration]);
 
-	// Register callbacks with ChatView class for broadcast commands
+	// Register callbacks with ChatView class for broadcast commands (only active tab)
 	useEffect(() => {
+		if (!isActive) return;
+
 		view.registerInputCallbacks({
 			getDisplayName: () => activeAgentLabel,
 			getInputState,
@@ -367,6 +338,7 @@ function ChatComponent({
 			view.unregisterInputCallbacks();
 		};
 	}, [
+		isActive,
 		view,
 		activeAgentLabel,
 		getInputState,
@@ -379,7 +351,6 @@ function ChatComponent({
 	// ============================================================
 	// Effects - Workspace Events (Hotkeys)
 	// ============================================================
-	// Custom event type with targetViewId parameter
 	type CustomEventCallback = (targetViewId?: string) => void;
 
 	useEffect(() => {
@@ -393,23 +364,22 @@ function ChatComponent({
 				) => ReturnType<typeof workspace.on>;
 			}
 		).on("agent-client:toggle-auto-mention", (targetViewId?: string) => {
-			// Only respond if this view is the target (or no target specified)
 			if (targetViewId && targetViewId !== viewId) {
 				return;
 			}
+			if (!isActive) return;
 			autoMention.toggle();
 		});
 
 		return () => {
 			workspace.offref(eventRef);
 		};
-	}, [plugin.app.workspace, autoMention.toggle, viewId]);
+	}, [plugin.app.workspace, autoMention.toggle, viewId, isActive]);
 
-	// Handle new chat request from plugin commands (e.g., "New chat with [Agent]")
+	// Handle new chat request from plugin commands
 	useEffect(() => {
 		const workspace = plugin.app.workspace;
 
-		// Cast to any to bypass Obsidian's type constraints for custom events
 		const eventRef = (
 			workspace as unknown as {
 				on: (
@@ -418,14 +388,13 @@ function ChatComponent({
 				) => ReturnType<typeof workspace.on>;
 			}
 		).on("agent-client:new-chat-requested", (agentId?: string) => {
-			// Note: new-chat-requested targets the last active view, which is handled
-			// by plugin.lastActiveChatViewId - only respond if we are that view
 			if (
 				plugin.lastActiveChatViewId &&
 				plugin.lastActiveChatViewId !== viewId
 			) {
 				return;
 			}
+			if (!isActive) return;
 			void handleNewChatWithPersist(agentId);
 		});
 
@@ -437,6 +406,7 @@ function ChatComponent({
 		plugin.lastActiveChatViewId,
 		handleNewChatWithPersist,
 		viewId,
+		isActive,
 	]);
 
 	useEffect(() => {
@@ -452,10 +422,10 @@ function ChatComponent({
 		).on(
 			"agent-client:approve-active-permission",
 			(targetViewId?: string) => {
-				// Only respond if this view is the target (or no target specified)
 				if (targetViewId && targetViewId !== viewId) {
 					return;
 				}
+				if (!isActive) return;
 				void (async () => {
 					const success = await permission.approveActivePermission();
 					if (!success) {
@@ -477,10 +447,10 @@ function ChatComponent({
 		).on(
 			"agent-client:reject-active-permission",
 			(targetViewId?: string) => {
-				// Only respond if this view is the target (or no target specified)
 				if (targetViewId && targetViewId !== viewId) {
 					return;
 				}
+				if (!isActive) return;
 				void (async () => {
 					const success = await permission.rejectActivePermission();
 					if (!success) {
@@ -500,10 +470,10 @@ function ChatComponent({
 				) => ReturnType<typeof workspace.on>;
 			}
 		).on("agent-client:cancel-message", (targetViewId?: string) => {
-			// Only respond if this view is the target (or no target specified)
 			if (targetViewId && targetViewId !== viewId) {
 				return;
 			}
+			if (!isActive) return;
 			void handleStopGeneration();
 		});
 
@@ -518,6 +488,7 @@ function ChatComponent({
 		permission.rejectActivePermission,
 		handleStopGeneration,
 		viewId,
+		isActive,
 	]);
 
 	// Handle "Add selection to chat" command (Cmd+L)
@@ -532,31 +503,31 @@ function ChatComponent({
 				) => ReturnType<typeof workspace.on>;
 			}
 		).on("agent-client:add-selection-to-chat", (text: string) => {
-			// Only respond if this view is the last active one
 			if (
 				plugin.lastActiveChatViewId &&
 				plugin.lastActiveChatViewId !== viewId
 			) {
 				return;
 			}
+			if (!isActive) return;
 
-			// Append to existing input (don't replace)
 			const currentText = inputValue;
 			const newText = currentText ? `${currentText}\n${text}` : text;
 			setInputValue(newText);
 
-			// Focus the textarea after a short delay (wait for view activation)
 			window.setTimeout(() => {
-				const textarea = view.containerEl.querySelector(
+				const activeTabContainer = view.containerEl.querySelector(
+					".agent-client-tab-content:not(.agent-client-tab-content-hidden)",
+				);
+				const textarea = activeTabContainer?.querySelector(
 					"textarea.agent-client-chat-input-textarea",
 				);
 				if (textarea instanceof HTMLTextAreaElement) {
 					textarea.focus();
-					// Move cursor to end
 					textarea.selectionStart = textarea.value.length;
 					textarea.selectionEnd = textarea.value.length;
 				}
-			}, 100);
+			}, 200);
 		});
 
 		return () => {
@@ -569,23 +540,14 @@ function ChatComponent({
 		inputValue,
 		setInputValue,
 		view.containerEl,
+		isActive,
 	]);
 
 	// ============================================================
 	// Render
 	// ============================================================
-	const chatFontSizeStyle =
-		settings.displaySettings.fontSize !== null
-			? ({
-					"--ac-chat-font-size": `${settings.displaySettings.fontSize}px`,
-				} as React.CSSProperties)
-			: undefined;
-
 	return (
-		<div
-			className="agent-client-chat-view-container"
-			style={chatFontSizeStyle}
-		>
+		<>
 			<ChatHeader
 				agentLabel={activeAgentLabel}
 				isUpdateAvailable={isUpdateAvailable}
@@ -640,6 +602,182 @@ function ChatComponent({
 				onClearError={handleClearError}
 				messages={messages}
 			/>
+		</>
+	);
+}
+
+// ============================================================================
+// ChatComponent - Tab Container (manages multiple ChatTabContent instances)
+// ============================================================================
+
+function ChatComponent({
+	plugin,
+	view,
+	viewId,
+}: {
+	plugin: AgentClientPlugin;
+	view: ChatView;
+	viewId: string;
+}) {
+	// ============================================================
+	// Platform Check
+	// ============================================================
+	if (!Platform.isDesktopApp) {
+		throw new Error("Agent Client is only available on desktop");
+	}
+
+	// ============================================================
+	// Agent ID State (synced with Obsidian view state)
+	// ============================================================
+	const [restoredAgentId, setRestoredAgentId] = useState<string | undefined>(
+		view.getInitialAgentId() ?? undefined,
+	);
+
+	// ============================================================
+	// Settings (for display settings + default agent)
+	// ============================================================
+	const settings = useSettings(plugin);
+
+	// ============================================================
+	// Session Tabs
+	// ============================================================
+	const defaultAgentId = restoredAgentId || settings.defaultAgentId || plugin.settings.claude.id;
+
+	// Get initial display name for default agent
+	const getAgentDisplayName = useCallback(
+		(agentId: string): string => {
+			const agents = plugin.getAvailableAgents();
+			const agent = agents.find((a) => a.id === agentId);
+			return agent?.displayName || agentId;
+		},
+		[plugin],
+	);
+
+	const sessionTabs = useSessionTabs(
+		defaultAgentId,
+		getAgentDisplayName(defaultAgentId),
+	);
+
+	// ============================================================
+	// Agent ID Restoration (ChatView-specific)
+	// ============================================================
+	useEffect(() => {
+		const unsubscribe = view.onAgentIdRestored((agentId) => {
+			setRestoredAgentId(agentId);
+		});
+		return unsubscribe;
+	}, [view]);
+
+	// ============================================================
+	// Focus Tracking (ChatView-specific)
+	// ============================================================
+	useEffect(() => {
+		const handleFocus = () => {
+			plugin.setLastActiveChatViewId(viewId);
+		};
+
+		const container = view.containerEl;
+		container.addEventListener("focus", handleFocus, true);
+		container.addEventListener("click", handleFocus);
+
+		// Set as active on mount (first opened view becomes active)
+		plugin.setLastActiveChatViewId(viewId);
+
+		return () => {
+			container.removeEventListener("focus", handleFocus, true);
+			container.removeEventListener("click", handleFocus);
+		};
+	}, [plugin, viewId, view.containerEl]);
+
+	// ============================================================
+	// Tab Callbacks
+	// ============================================================
+	const handleAddTab = useCallback(() => {
+		const agentId = settings.defaultAgentId || plugin.settings.claude.id;
+		sessionTabs.addTab(agentId, getAgentDisplayName(agentId));
+	}, [sessionTabs, settings.defaultAgentId, plugin.settings.claude.id, getAgentDisplayName]);
+
+	const handleCloseTab = useCallback(
+		(tabId: string) => {
+			// Clean up adapter for the closing tab
+			const tabViewId = sessionTabs.getTabViewId(viewId, tabId);
+			void plugin.removeAdapter(tabViewId);
+			sessionTabs.removeTab(tabId);
+		},
+		[sessionTabs, viewId, plugin],
+	);
+
+	const handleAgentChange = useCallback(
+		(tabId: string, agentLabel: string, agentId: string) => {
+			sessionTabs.updateTabAgent(tabId, agentId);
+			// Only update title if it's still the default agent name (no first message yet)
+			const tab = sessionTabs.tabs.find((t) => t.tabId === tabId);
+			if (tab) {
+				const currentAgentName = getAgentDisplayName(tab.agentId);
+				if (tab.title === currentAgentName || tab.title === getAgentDisplayName(agentId)) {
+					sessionTabs.updateTabTitle(tabId, agentLabel);
+				}
+			}
+		},
+		[sessionTabs, getAgentDisplayName],
+	);
+
+	const handleFirstMessage = useCallback(
+		(tabId: string, messagePreview: string) => {
+			sessionTabs.updateTabTitle(tabId, messagePreview);
+		},
+		[sessionTabs],
+	);
+
+	// ============================================================
+	// Render
+	// ============================================================
+	const chatFontSizeStyle =
+		settings.displaySettings.fontSize !== null
+			? ({
+					"--ac-chat-font-size": `${settings.displaySettings.fontSize}px`,
+				} as React.CSSProperties)
+			: undefined;
+
+	return (
+		<div
+			className="agent-client-chat-view-container"
+			style={chatFontSizeStyle}
+		>
+			<ChatTabBar
+				tabs={sessionTabs.tabs}
+				activeTabId={sessionTabs.activeTabId}
+				onSwitchTab={sessionTabs.switchTab}
+				onCloseTab={handleCloseTab}
+				onAddTab={handleAddTab}
+			/>
+
+			{sessionTabs.tabs.map((tab) => {
+				const tabViewId = sessionTabs.getTabViewId(viewId, tab.tabId);
+				const isActive = tab.tabId === sessionTabs.activeTabId;
+
+				return (
+					<div
+						key={tab.tabId}
+						className={`agent-client-tab-content ${isActive ? "" : "agent-client-tab-content-hidden"}`}
+					>
+						<ChatTabContent
+							plugin={plugin}
+							view={view}
+							viewId={viewId}
+							tabViewId={tabViewId}
+							isActive={isActive}
+							initialAgentId={tab.tabId === "tab-0" ? restoredAgentId : undefined}
+							onAgentChange={(label, id) =>
+								handleAgentChange(tab.tabId, label, id)
+							}
+							onFirstMessage={(preview) =>
+								handleFirstMessage(tab.tabId, preview)
+							}
+						/>
+					</div>
+				);
+			})}
 		</div>
 	);
 }
@@ -925,7 +1063,7 @@ export class ChatView extends ItemView implements IChatViewContainer {
 			this.root.unmount();
 			this.root = null;
 		}
-		// Remove adapter for this view (disconnect process)
-		await this.plugin.removeAdapter(this.viewId);
+		// Remove all adapters for this view (including tab-based adapters)
+		await this.plugin.removeAdaptersForView(this.viewId);
 	}
 }

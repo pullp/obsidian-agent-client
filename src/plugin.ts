@@ -301,6 +301,52 @@ export default class AgentClientPlugin extends Plugin {
 			},
 		});
 
+		// Create block link: insert block ID at end of current line, copy block reference
+		this.addCommand({
+			id: "create-block-link",
+			name: "Create block link and copy reference",
+			editorCallback: (editor: Editor, view: MarkdownView) => {
+				const file = view.file;
+				if (!file) {
+					new Notice("No active file");
+					return;
+				}
+
+				const cursor = editor.getCursor();
+				const line = editor.getLine(cursor.line);
+
+				// Check if line already has a block ID
+				const existingBlockId = line.match(/\s\^([a-z0-9]+)$/);
+				if (existingBlockId) {
+					// Already has a block ID — just copy the reference
+					const fileName = file.basename;
+					const reference = `[[${fileName}#^${existingBlockId[1]}]]`;
+					void navigator.clipboard.writeText(reference).then(() => {
+						new Notice(`Copied: ${reference}`, 3000);
+					});
+					return;
+				}
+
+				// Generate random 6-char lowercase hex ID
+				const blockId = Array.from(
+					crypto.getRandomValues(new Uint8Array(3)),
+				)
+					.map((b) => b.toString(16).padStart(2, "0"))
+					.join("");
+
+				// Append block ID to end of current line
+				const newLine = `${line} ^${blockId}`;
+				editor.setLine(cursor.line, newLine);
+
+				// Build and copy reference: [[filename#^blockId]]
+				const fileName = file.basename;
+				const reference = `[[${fileName}#^${blockId}]]`;
+				void navigator.clipboard.writeText(reference).then(() => {
+					new Notice(`Copied: ${reference}`, 3000);
+				});
+			},
+		});
+
 		// Add selection to chat: send selected text as reference to agent chat input
 		this.addCommand({
 			id: "add-selection-to-chat",
@@ -468,6 +514,22 @@ export default class AgentClientPlugin extends Plugin {
 		}
 		// Note: lastActiveChatViewId is now managed by viewRegistry
 		// Clearing happens automatically when view is unregistered
+	}
+
+	/**
+	 * Remove and disconnect all adapters whose key starts with the given viewId prefix.
+	 * Used when a ChatView with tabs is closed — each tab has an adapter keyed as
+	 * `${viewId}-tab-${tabId}`, and all must be cleaned up.
+	 */
+	async removeAdaptersForView(viewIdPrefix: string): Promise<void> {
+		const keysToRemove: string[] = [];
+		for (const key of this._adapters.keys()) {
+			if (key === viewIdPrefix || key.startsWith(`${viewIdPrefix}-tab-`)) {
+				keysToRemove.push(key);
+			}
+		}
+
+		await Promise.all(keysToRemove.map((key) => this.removeAdapter(key)));
 	}
 
 	/**
